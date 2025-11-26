@@ -1,0 +1,40 @@
+# Home Assistant конфигурационни тайни и временни файлове
+secrets.yaml
+.env
+*.log
+*.db
+*.db-shm
+*.db-wal
+
+# Python кеш и временни файлове
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# VS Code / редактори
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS боклуци
+.DS_Store
+._*
+
+# Windows боклуци
+Thumbs.db
+Desktop.ini
+
+# Локални тестове и бекъпи
+test_*.py
+backup/
+*.backup
+*.tmp
+
+# Лични конфигурации (ако решиш да сложиш примерни)
+configuration_example.yaml
+!configuration.yaml        # ако искаш да споделиш само template частта, преименувай я
