@@ -65,12 +65,26 @@ is_weekend   = weekday in [0, 6]
 long_preheat = manual_force or (auto_weekend and is_weekend) or is_holiday
 is_comfort   = home or long_preheat or preheat
 
-# ───── ЦЕЛЕВА ТЕМПЕРАТУРА + ОБЛАЧНАТА ЧЕРЕШКА ─────
+# ───── ЦЕЛЕВА ТЕМПЕРАТУРА + ОБЛАЧНАТА ЧЕРЕШКА (v6.5.2 AGGRESSIVE-ECO FIX) ─────
 comfort = safe_float('input_number.comfort_target_temp', 22.2, 20.0, 24.5)
 sleep   = safe_float('input_number.sleep_target_temp', 17.8, 16.0, 20.0)
-target  = comfort + 1.4 if preheat else comfort if is_comfort else max(comfort - 1.3, 20.0)
-if hour >= 23 or hour < 6: target = max(sleep, 17.8)
 
+# Първо изчисляваме cloudy_reduction
+cloudy_reduction = 0.0
+if not is_comfort and solar_score < 30:
+    cloudy_reduction = -0.7
+    if solar_score < 20:
+        cloudy_reduction = -1.1                     # ← малко по-дълбока черешка
+    target_reduction = -1.5 + cloudy_reduction   # -1.5 °C базов ECO + черешка
+    target = max(comfort + target_reduction, 18.0)  # долна граница 18.0 °C
+    log(f"CLOUDY ECO AGGRESSIVE: solar {solar_score}% → target {target_reduction:+.1f}°C → final {target:.1f}°C")
+else:
+    target = comfort + 1.4 if preheat else comfort if is_comfort else max(comfort - 1.3, 18.0)
+
+# Нощен режим (спане)
+if hour >= 23 or hour < 6:
+    target = max(sleep, 17.5)   # малко по-ниско от преди, ако искаш
+    
 # ОБЛАЧНАТА ЧЕРЕШКА
 cloudy_reduction = 0.0
 if not is_comfort and solar_score < 30:
