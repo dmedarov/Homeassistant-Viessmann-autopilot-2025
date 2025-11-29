@@ -1,38 +1,45 @@
 # Home Assistant Viessmann Autopilot 2025
 
-Open-source advanced heat pump controller for Home Assistant (2025.11+)
+**Advanced open-source heat pump controller for Home Assistant 2025.11+**  
+Real-world tested on 12 kW Viessmann Vitocal + 5–10 kW PV in Bulgaria since 2024  
+Measured energy savings: **18–32 %** vs factory settings (2024–2025 season)
 
-Tested on 12 kW Viessmann Vitocal + 5–10 kW PV in real Bulgarian house since 2024.  
-Real measured savings: 18–32 % compared to factory settings (2024–2025 season).
+![Dashboard](screenshots/dashboard_full.png)
 
 ## Features
-- 5-zone weighted PI control with per-zone integrals
-- GPS-based preheat (time-to-home calculation)
-- Smart PV excess boost with EMA smoothing (up to +11 °C shift)
-- “Cloudy Cherry” target reduction when away and low solar score
-- Polar Vortex pre-heat based on 72 h / 96 h forecast
-- Long-comfort slope capping after 48 h presence
-- Full safety limits (supply ≤ 59 °C, compressor protection)
-- Summer OFF mode
-- Complete sensor fallback cascade
-- Full log history (300 lines) in sensor.autopilot_log
+
+| Feature                              | Description                                                                 |
+|--------------------------------------|-----------------------------------------------------------------------------|
+| 5-zone weighted PI control           | Individual integral terms per room (±7 °C·h), main house PI (±9 °C·h)       |
+| GPS preheat                          | Calculates exact time-to-home from iPhone/Android location + speed          |
+| Smart PV excess boost                | EMA-smoothed boost up to +11 °C shift, prevents compressor cycling         |
+| Cloudy Cherry™                       | –0.7 to –1.0 °C target reduction when away and solar_score < 35            |
+| Polar Vortex pre-heat                | +4 to +6.5 °C bonus when 72–96 h forecast shows extreme cold               |
+| Long-comfort degradation            | Caps heating curve slope at 0.92 after 48 h continuous presence            |
+| Full safety system                   | Hard limits (supply ≤ 59 °C), 3-level compressor runtime protection        |
+| Summer OFF mode                      | Automatic shutdown when outdoor > 20 °C and indoor > 23 °C                 |
+| Sensor fallback cascade            | Works even if half the sensors are unavailable                              |
+| Full log history                     | 300-line rolling log in `sensor.autopilot_log`                              |
 
 ## Requirements
-- Home Assistant 2025.11 or newer
-- Viessmann heat pump (Modbus or official integration)
-- Outdoor temperature sensor
-- Indoor average temperature sensor
-- PV production sensors
-- (Recommended) 72 h forecast and humidity sensors
 
-## Installation
+- Home Assistant 2025.11 or newer
+- Viessmann heat pump (official integration or Modbus)
+- Outdoor temperature sensor
+- Average indoor temperature sensor
+- PV production sensors (`sensor.power_production_now`, `sensor.energy_production_today_remaining`)
+- Recommended: 72–96 h weather forecast + outdoor humidity
+
+## Installation (3 minutes)
+
 1. Copy `viessmann_autopilot_2025.py` → `/config/python_scripts/`
-2. Add the provided template sensors to `configuration.yaml`
-3. (Optional) Import the Lovelace dashboard
-4. Create one automation (recommended every 20 minutes):
+2. Add the template sensors from `templates/` to your `configuration.yaml`
+3. (Optional) Import the ready-made Lovelace dashboard from `lovelace/`
+4. Create **one single** automation (this is the only one you need):
 
 ```yaml
-alias: Viessmann Autopilot 2030
+alias: ♨️ Viessmann Autopilot 2030 — FINAL
+description: Runs every 20 minutes + instant reaction on important changes
 trigger:
   - platform: time_pattern
     minutes: 0
@@ -46,5 +53,6 @@ condition:
     state: "on"
 action:
   - service: python_script.viessmann_autopilot_2025
-mode: single
-max: 2
+mode: single          # prevents duplicate executions
+max: 2                # HA minimum allowed value
+
