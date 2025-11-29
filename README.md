@@ -38,21 +38,18 @@ Measured energy savings: **18–32 %** vs factory settings (2024–2025 season)
 4. Create **one single** automation (this is the only one you need):
 
 ```yaml
-alias: ♨️ Viessmann Autopilot 2030 — FINAL
-description: Runs every 20 minutes + instant reaction on important changes
-trigger:
-  - platform: time_pattern
-    minutes: 0
-  - platform: time_pattern
-    minutes: 20
-  - platform: time_pattern
-    minutes: 40
-condition:
+alias: ♨️ Viessmann Autopilot — FINAL & CLEAN
+description: 1 запис на 20 минути – гарантирано
+triggers:
+  - minutes: /20
+    trigger: time_pattern
+conditions:
   - condition: state
     entity_id: input_boolean.heating_autopilot_enabled
     state: "on"
-action:
-  - service: python_script.viessmann_autopilot_2025
-mode: single          # prevents duplicate executions
-max: 2                # HA minimum allowed value
+actions:
+  - delay: "00:00:05"
+  - action: python_script.viessmann_autopilot_2025
+mode: single
+max: 10
 
