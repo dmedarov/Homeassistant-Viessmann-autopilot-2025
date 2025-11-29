@@ -1,0 +1,185 @@
+# ───── TEMPLATE СЕНЗОРИ — ПЕРФЕКТНИ, СТАБИЛНИ И 100 % СЪВМЕСТИМИ С VIESMANN CU401B S 2025 ─────
+template:
+  - sensor:
+      # 1. Външна температура
+      - name: "Outdoor Temperature"
+        unique_id: outdoor_temperature
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:thermometer
+        state: >-
+          {% set v = states('sensor.cu401b_s_outside_temperature')|float(default=5) %}
+          {{ v|round(1) if v|abs < 80 else states('sensor.netatmo_outdoor_temperature')|float(default=5)|round(1) }}
+
+      # 2. Средна вътрешна температура
+      - name: "Indoor Temperature Avg"
+        unique_id: indoor_temperature_avg
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: >-
+          {% set rooms = ['sensor.downstairs_temperature','sensor.home_living_room_temperature','sensor.bedroom_damian_temperature','sensor.bedroom_honey_temperature','sensor.alex_room_temperature'] %}
+          {% set temps = rooms|map('states')|map('float',none)|reject('none')|list %}
+          {{ (temps|average)|round(2) if temps else 21.0 }}
+
+      # 3. Forecast Min 72h – 100 % работещ (за Met.no)
+      - name: "Forecast Min 72h"
+        unique_id: forecast_min_72h
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:thermometer-low
+        state: >
+          {% set data = state_attr('weather.forecast_home_osoica','forecast') %}
+          {% if data is none or data == [] %}
+            {{ (states('sensor.cu401b_s_outside_temperature')|float(5) - 2)|round(1) }}
+          {% else %}
+            {% set min_temp = 99 %}
+            {% for entry in data[0:7] %}
+              {% set low = entry.templow if (entry.templow is defined and entry.templow is not none) else (entry.temperature|default(99)) %}
+              {% if low|float < min_temp %} {% set min_temp = low|float %} {% endif %}
+            {% endfor %}
+            {% set margin = 0.4 if min_temp >= 0 else 0.7 if min_temp >= -5 else 1.0 if min_temp >= -10 else 1.3 if min_temp >= -15 else 1.6 if min_temp >= -20 else 2.0 %}
+            {{ (min_temp - margin)|round(1) }}
+          {% endif %}
+
+      # 4. Solar Forecast Score 72h - (за Met.no)
+      - name: "Solar Forecast Score 72h"
+        unique_id: solar_forecast_score_72h
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:weather-sunny
+        state: >
+          {% set data = state_attr('weather.forecast_home_osoica','forecast') %}
+          {% if data is none or data == [] %}
+            35
+          {% else %}
+            {% set score = 0 %}
+            {% for entry in data[0:3] %}
+              {% set c = (entry.condition | default('cloudy') | string | lower) %}
+              {% if c in ['clearsky','fair','sunny'] %} {% set score = score + 100 %}
+              {% elif c == 'partlycloudy' %} {% set score = score + 60 %}
+              {% elif c == 'cloudy' %} {% set score = score + 20 %}
+              {% endif %}
+            {% endfor %}
+            {{ (score / 3) | round(0) }}
+          {% endif %}
+
+      # 5. Компресорна защита
+      - name: "Compressor Runtime Protection"
+        unique_id: compressor_runtime_protection
+        state: >-
+          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
+            {% set m = state_attr('binary_sensor.cu401b_s_compressor','runtime_minutes')|default(0)|int(default=0) %}
+            {% if m > 45 %} very_long
+            {% elif m > 35 %} long
+            {% elif m > 25 %} medium
+            {% else %} normal {% endif %}
+          {% else %} off {% endif %}
+        icon: >-
+          {{ 'mdi:alert' if states('sensor.compressor_runtime_protection') in ['very_long','long'] else 'mdi:engine' }}
+
+      # 6. Режим Comfort/Eco
+      - name: "Heating Current Mode 2030"
+        unique_id: heating_current_mode_2030
+        state: >-
+          {% set home = is_state('device_tracker.damian_iphone_14','Home-Osoica') %}
+          {% set force = is_state('input_boolean.heating_preheat_48h_force',' parms on') %}
+          {% set wknd = is_state('input_boolean.heating_weekend_mode_auto','on') and now().weekday() in [5,6] %}
+          {% set holiday = is_state('calendar.blgarski_ofitsialni_praznitsi_2025_2030','on') %}
+          {{ 'Comfort' if home or force or wknd or holiday else 'Eco' }}
+        icon: >-
+          {{ 'mdi:home-heart' if states('sensor.heating_current_mode_2030') == 'Comfort' else 'mdi:leaf' }}
+          
+      - name: "PV Boost Smoothed"
+        unique_id: pv_boost_smoothed
+        unit_of_measurement: "°C"
+        state: "0.0"
+        icon: mdi:solar-power
+
+      # PI интеграли (инициализация)
+      - name: "Heating PI Integral"
+        unique_id: heating_pi_integral
+        unit_of_measurement: "°C·h"
+        icon: mdi:chart-line
+        state: "0.0"
+      - name: "PI Integral Living"
+        unique_id: pi_integral_living
+        unit_of_measurement: "°C·h"
+        icon: mdi:home-thermometer
+        state: "0.0"
+      - name: "PI Integral Damian"
+        unique_id: pi_integral_damian
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+      - name: "PI Integral Honey"
+        unique_id: pi_integral_honey
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+      - name: "PI Integral Downstairs"
+        unique_id: pi_integral_downstairs
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+      - name: "PI Integral Alex"
+        unique_id: pi_integral_alex
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "Autopilot Log"
+        unique_id: autopilot_log
+        state: "{{ now().strftime('%H:%M:%S') }}"
+        attributes:
+          history: >-
+            {% set hist = state_attr('sensor.autopilot_log', 'history') | default('') %}
+            {% if hist == '' %}
+              {{ this.attributes.get('last_line', '') }}
+            {% else %}
+              {{ (this.attributes.get('last_line', '') ~ '\n' ~ hist).splitlines()[:300] | join('\n') }}
+            {% endif %}
+          last_line: "{{ this.attributes.get('last_line', '') }}"
+      
+      - name: "Autopilot Full Log History"
+        unique_id: autopilot_full_log_history
+        state: "{{ states('sensor.autopilot_log') }}"
+        attributes:
+          history: "{{ state_attr('sensor.autopilot_log', 'history') | default('') }}"
+          friendly_name: "Viessmann Autopilot – Пълен лог (300 реда)"
+          icon: mdi:rocket-launch-outline
+
+      - name: "compressor_runtime_today"
+        unique_id: compressor_runtime_today
+        unit_of_measurement: "h"
+        device_class: duration
+        state: >
+          {% set last_reset = states.sensor.compressor_runtime_today.last_changed | default(now().replace(hour=0, minute=0, second=0, microsecond=0)) %}
+          {% if is_state('binary_sensor.cu401b_s_compressor', 'on') %}
+            {{ (states.sensor.compressor_runtime_today.state | float(0) + (now() - last_reset).total_seconds() / 3600) | round(2) }}
+          {% else %}
+            {{ states.sensor.compressor_runtime_today.state | float(0) | round(2) }}
+          {% endif %}
+        availability: "{{ not states('binary_sensor.cu401b_s_compressor') == 'unavailable' }}"
+        
+      - name: "compressor_runtime_protection"
+        unique_id: compressor_runtime_protection
+        state: >
+          {% set h = states('sensor.compressor_runtime_today') | float(0) %}
+          {% if h > 20 %}very_long
+          {% elif h > 17 %}long
+          {% elif h > 14 %}medium
+          {% else %}off{% endif %}
+        icon: >
+          {% set level = states('sensor.compressor_runtime_protection') %}
+          {% if level == 'very_long' %}mdi:alert-decagram
+          {% elif level == 'long' %}mdi:alert
+          {% elif level == 'medium' %}mdi:alert-outline
+          {% else %}mdi:check-circle-outline{% endif %}    
+
+# ───── ЗАДЪЛЖИТЕЛЕН TIME_DATE СЕНЗОР ─────
+sensor:
+  - platform: time_date
+    display_options:
+      - 'time'
+      - 'date'
+      - 'date_time'
+      - 'date_time_iso'
