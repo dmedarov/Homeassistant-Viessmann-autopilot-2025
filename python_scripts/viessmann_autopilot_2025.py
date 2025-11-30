@@ -260,13 +260,34 @@ if supply_temp >= 59.5 or comp_protect == 'very_long':
         'message': f"Топла вода {supply_temp:.1f}°C | Компресор {comp_protect.upper()}"
     })
 
-# ───── ПЕРФЕКТЕН ЛОГ ─────
-mode = "HOME" if home else "PREHEAT" if preheat else "WEEKEND/HOLIDAY" if long_preheat else "AWAY"
+# ───── УЛТРА-ЛОГ 2030 v9.1 – 100 % СЪВМЕСТИМ С 255 ЗНАКА (254 макс) ─────
+mode_detail = []
+if home: mode_detail.append("HOME")
+if preheat:
+    try:
+        mins = int((dist / 1000) / max(spd, 20) * 60) + 22
+    except:
+        mins = "?"
+    mode_detail.append(f"PH{mins}m")
+if long_preheat: mode_detail.append("LONG")
+if is_holiday: mode_detail.append("HOL")
+if manual_force: mode_detail.append("F48")
+if is_weekend and auto_weekend: mode_detail.append("WE")
+if not mode_detail: mode_detail.append("AWAY")
+mode_str = "/".join(mode_detail[:3]) if len(mode_detail) <= 3 else "M:"+"/".join(mode_detail[:3])
+
+# RH корекция за лога
+rh_adj = 0.0
+if rh > 85: rh_adj = 0.10
+elif rh > 75: rh_adj = 0.06
+
 log_line = (
     f"{day:02d}.{month:02d} {hour:02d}:{minute:02d} │ "
-    f"{indoor:5.1f}→{target:4.1f}°C │ "
-    f"shift {final_shift:+5.1f} │ slope {slope:4.2f} │ "
-    f"PV {pv_now:5.1f}→{pv_boost:+4.1f} │ {mode} │ {comp_protect.upper()}"
+    f"In {indoor:5.2f}→{target:5.2f} │ Out {outdoor:4.1f} │ "
+    f"Sh {final_shift:+5.1f} │ Sl {slope:4.3f} │ "
+    f"PI {pi_shift:+4.1f}│Z {zone_shift:+4.1f}│PV{pv_boost:+4.1f}│TB{thermal_boost:+3.1f} │ "
+    f"NB{night_preheat_bonus:+3.1f}│MB{morning_preheat_bonus:+3.1f}│FB{forecast_shift_bonus:+3.1f} │ "
+    f"{comp_protect.upper():>6}│S{supply_temp:3.0f}°│RH{rh:2.0f}%│{mode_str}"
 )
 
 hass.states.set('sensor.autopilot_log_last_line', log_line)
