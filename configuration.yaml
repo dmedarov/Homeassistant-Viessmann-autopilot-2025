@@ -2,6 +2,21 @@
 # TEMPLATE СЕНЗОРИ – 100 % РАБОТЕЩИ В HOME ASSISTANT 2025.11+ и по-нови
 # ═════════════════════════════════════════════════════════════════════════════
 template:
+
+  # ── 0. НАЙ-ВАЖНИЯТ: СЕНЗОР ЗА ДАТА И ЧАС (за да не замръзва autopilot никога повече) ──
+  - sensor:
+      - name: "Datetime"
+        unique_id: datetime
+        state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        icon: mdi:clock-outline
+        attributes:
+          friendly_name: "Текуща дата и час"
+          year: "{{ now().year }}"
+          month: "{{ now().month }}"
+          day: "{{ now().day }}"
+          hour: "{{ now().hour }}"
+          minute: "{{ now().minute }}"
+
   # ── 1. Бързи сензори (всеки 30 секунди) ─────────────────────────────────────
   - trigger:
       - platform: time_pattern
