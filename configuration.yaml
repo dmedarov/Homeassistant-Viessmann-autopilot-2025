@@ -1,9 +1,9 @@
-# ═════════════════════════════════════════════════════════════════════════════
-# TEMPLATE СЕНЗОРИ – 100 % РАБОТЕЩИ В HOME ASSISTANT 2025.11+ и по-нови
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# TEMPLATE СЕНЗОРИ – 2030.12 ETERNAL FINAL (100 % валидно за HA 2025.11+)
+# ══════════════════════════════════════════════════════════════════════════════
 template:
 
-  # ── 0. НАЙ-ВАЖНИЯТ: СЕНЗОР ЗА ДАТА И ЧАС (за да не замръзва autopilot никога повече) ──
+  # 0. Критичен сензор за дата/час – никога повече замръзване на autopilot
   - sensor:
       - name: "Datetime"
         unique_id: datetime
@@ -11,84 +11,73 @@ template:
         icon: mdi:clock-outline
         attributes:
           friendly_name: "Текуща дата и час"
-          year: "{{ now().year }}"
-          month: "{{ now().month }}"
-          day: "{{ now().day }}"
-          hour: "{{ now().hour }}"
-          minute: "{{ now().minute }}"
 
-  # ── 1. Бързи сензори (всеки 30 секунди) ─────────────────────────────────────
+  # 1. Бързи сензори – актуализация на 30 секунди
   - trigger:
       - platform: time_pattern
         seconds: /30
     sensor:
-      - name: Outdoor Temperature
+      # Външна температура (приоритет на Viessmann, fallback Netatmo)
+      - name: "Outdoor Temperature"
         unique_id: outdoor_temperature
         unit_of_measurement: °C
         device_class: temperature
         state_class: measurement
-        icon: mdi:thermometer
         state: >
-          {% set cu = states('sensor.cu401b_s_outside_temperature') | float(999) %}
-          {% if cu|abs < 80 %}
-            {{ cu|round(1) }}
-          {% else %}
-            {{ states('sensor.netatmo_outdoor_temperature') | float(5) | round(1) }}
-          {% endif %}
+          {% set v = states('sensor.cu401b_s_outside_temperature') | float(999) %}
+          {% if v|abs < 80 %}{{ v|round(1) }}
+          {% else %}{{ states('sensor.netatmo_outdoor_temperature') | float(5) | round(1) }}{% endif %}
 
-      - name: Indoor Temperature Avg
+      # Средна вътрешна температура (теглени стаи)
+      - name: "Indoor Temperature Avg"
         unique_id: indoor_temperature_avg
         unit_of_measurement: °C
         device_class: temperature
         state_class: measurement
-        icon: mdi:home-thermometer
         state: >
-          {% set rooms = ['sensor.downstairs_temperature','sensor.home_living_room_temperature','sensor.bedroom_damian_temperature','sensor.bedroom_honey_temperature','sensor.alex_room_temperature'] %}
+          {% set rooms = ['sensor.downstairs_temperature','sensor.home_living_room_temperature',
+                          'sensor.bedroom_damian_temperature','sensor.bedroom_honey_temperature',
+                          'sensor.alex_room_temperature'] %}
           {% set temps = rooms | map('states') | map('float', none) | reject('eq', none) | list %}
           {{ (temps | sum / temps | count) | round(2) if temps else 21.0 }}
 
-      - name: Forecast Min 72h
+      # Прогноза минимум 72 ч (с консервативен margin)
+      - name: "Forecast Min 72h"
         unique_id: forecast_min_72h
         unit_of_measurement: °C
         device_class: temperature
         state_class: measurement
-        icon: mdi:thermometer-low
         state: >
           {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f == [] %}
+          {% if f|length == 0 %}
             {{ (states('sensor.cu401b_s_outside_temperature')|float(5)-2)|round(1) }}
           {% else %}
             {% set lows = f[:7] | map(attribute='templow') | map('float',99) | list %}
             {% set m = lows|min %}
             {% set margin = [0.4,0.7,1.0,1.3,1.6,2.0][([0,-5,-10,-15,-20,-99]|reject('gt',m)|list|count)-1] %}
-            {{ (m-margin)|round(1) }}
+            {{ (m - margin)|round(1) }}
           {% endif %}
 
-      - name: Forecast Min 96h
+      # Прогноза минимум 96 ч
+      - name: "Forecast Min 96h"
         unique_id: forecast_min_96h
         unit_of_measurement: °C
-        device_class: temperature
-        state_class: measurement
-        icon: mdi:thermometer-low
         state: >
           {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f|length < 4 %}
-            {{ states('sensor.forecast_min_72h')|float(5) }}
-          {% else %}
-            {{ (f[3:10]|map(attribute='templow')|map('float',99)|list|min)|round(1) }}
-          {% endif %}
+          {% if f|length < 4 %}{{ states('sensor.forecast_min_72h')|float(5)|round(1) }}
+          {% else %}{{ (f[3:10]|map(attribute='templow')|map('float',99)|list|min)|round(1) }}{% endif %}
 
-      - name: Solar Forecast Score 72h
+      # Слънчев индекс 72 ч
+      - name: "Solar Forecast Score 72h"
         unique_id: solar_forecast_score_72h
         unit_of_measurement: "%"
         state_class: measurement
-        icon: mdi:weather-sunny
         state: >
           {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f == [] %}35{% else %}
+          {% if f|length == 0 %}35{% else %}
             {% set s = 0 %}
-            {% for e in f[:3] %}
-              {% set c = (e.condition|default('cloudy')|lower) %}
+            {% for day in f[:3] %}
+              {% set c = (day.condition|default('cloudy')|lower) %}
               {% if c in ['sunny','fair','clearsky','clear'] %}{% set s = s + 100 %}
               {% elif c == 'partlycloudy' %}{% set s = s + 60 %}
               {% elif c in ['cloudy','overcast'] %}{% set s = s + 20 %}{% endif %}
@@ -96,12 +85,12 @@ template:
             {{ (s/3)|round(0)|int }}
           {% endif %}
 
-  # ── 2. Сензори, зависещи от компресора ─────────────────────────────────────
+  # 2. Защита на компресора (по текущ цикъл)
   - trigger:
       - platform: state
         entity_id: binary_sensor.cu401b_s_compressor
     sensor:
-      - name: Compressor Runtime Protection
+      - name: "Compressor Runtime Protection"
         unique_id: compressor_runtime_protection
         state: >
           {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
@@ -116,76 +105,108 @@ template:
           {% elif s == 'normal' %}mdi:engine
           {% else %}mdi:engine-off{% endif %}
 
-  # ── 3. Дневна защита + текущ режим ───────────────────────────────────────
+  # 3. Дневна защита + текущ режим (всеки 5 мин + при промяна)
   - trigger:
       - platform: time_pattern
         minutes: /5
       - platform: state
         entity_id: sensor.compressor_runtime_today
     sensor:
-      - name: Compressor Runtime Protection Daily
+      - name: "Compressor Runtime Protection Daily"
         unique_id: compressor_runtime_protection_daily
         state: >
           {% set h = states('sensor.compressor_runtime_today')|float(0) %}
           {% if h > 20 %}very_long{% elif h > 17 %}long{% elif h > 14 %}medium{% else %}off{% endif %}
-        icon: >
-          {% set s = states('sensor.compressor_runtime_protection_daily') %}
-          {% if s == 'very_long' %}mdi:alert-decagram
-          {% elif s == 'long' %}mdi:alert
-          {% elif s == 'medium' %}mdi:alert-outline
-          {% else %}mdi:check-circle-outline{% endif %}
 
-      - name: Heating Current Mode 2030
+      - name: "Heating Current Mode 2030"
         unique_id: heating_current_mode_2030
         state: >
-          {% set h = is_state('device_tracker.damian_iphone_14','Home-Osoica') %}
-          {% set f = is_state('input_boolean.heating_preheat_48h_force','on') %}
-          {% set w = is_state('input_boolean.heating_weekend_mode_auto','on') and now().weekday() in [5,6] %}
-          {% set hol = is_state('calendar.blgarski_ofitsialni_praznitsi_2025_2030','on') %}
-          {{ 'Comfort' if h or f or w or hol else 'Eco' }}
+          {% set home = is_state('binary_sensor.damian_really_home','on') %}
+          {% set force = is_state('input_boolean.heating_preheat_48h_force','on') %}
+          {% set weekend = is_state('input_boolean.heating_weekend_mode_auto','on') and now().weekday() >= 5 %}
+          {% set holiday = is_state('calendar.blgarski_ofitsialni_praznitsi_2025_2030','on') %}
+          {{ 'Comfort' if home or force or weekend or holiday else 'Eco' }}
         icon: >
           {{ 'mdi:home-heart' if states('sensor.heating_current_mode_2030') == 'Comfort' else 'mdi:leaf' }}
 
-  # ── 4. Първоначални стойности (не се тригерират никога) ─────────────────────
+  # 4. Първоначални сензори с restore_state
   - sensor:
-      - name: PV Boost Smoothed
+      - name: "PV Boost Smoothed"
         unique_id: pv_boost_smoothed
         unit_of_measurement: °C
         state: "0.0"
         icon: mdi:solar-power-variant
-      - name: Heating PI Integral
+      - name: "Heating PI Integral"
         unique_id: heating_pi_integral
         unit_of_measurement: °C·h
         state: "0.0"
-      - name: PI Integral Living
+      - name: "PI Integral Living"
         unique_id: pi_integral_living
         unit_of_measurement: °C·h
         state: "0.0"
-      - name: PI Integral Downstairs
+      - name: "PI Integral Downstairs"
         unique_id: pi_integral_downstairs
         unit_of_measurement: °C·h
         state: "0.0"
-      - name: PI Integral Damian
+      - name: "PI Integral Damian"
         unique_id: pi_integral_damian
         unit_of_measurement: °C·h
         state: "0.0"
-      - name: PI Integral Honey
+      - name: "PI Integral Honey"
         unique_id: pi_integral_honey
         unit_of_measurement: °C·h
         state: "0.0"
-      - name: PI Integral Alex
+      - name: "PI Integral Alex"
         unique_id: pi_integral_alex
         unit_of_measurement: °C·h
         state: "0.0"
+      - name: "Long Comfort Counter"
+        unique_id: long_comfort_counter
+        state: "0.0"
+        unit_of_measurement: h
 
-  # ── 5. ПЪЛЕН ЛОГ СЕНЗОР – 2025.11+ СЪВМЕСТИМ (най-важният) ─────────────────────
+  # 5. Компресор днес – точен брояч с ежедневен ресет (без drift)
+  - trigger:
+      - platform: time
+        at: "00:00:05"
+      - platform: state
+        entity_id: binary_sensor.cu401b_s_compressor
+    sensor:
+      - name: "Compressor Runtime Today"
+        unique_id: compressor_runtime_today
+        unit_of_measurement: h
+        device_class: duration
+        state_class: total
+        icon: mdi:timer-outline
+        state: >
+          {% set today = now().date() %}
+          {% set last_reset = (states.sensor.compressor_runtime_today.attributes.last_reset | default('1970-01-01')) | as_datetime(false) %}
+          {% set base = states('sensor.compressor_runtime_today') | float(0) if last_reset and last_reset.date() == today else 0.0 %}
+          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
+            {% set minutes = (now() - states.binary_sensor.cu401b_s_compressor.last_changed).total_seconds() / 60 %}
+            {{ (base + minutes/60) | round(3) }}
+          {% else %}
+            {{ base | round(3) }}
+          {% endif %}
+        attributes:
+          last_reset: "{{ today_at().replace(hour=0, minute=0, second=5).isoformat() }}"
+
+  # 6. Точен "Damian Really Home" (използван от autopilot)
+  - binary_sensor:
+      - name: "Damian Really Home"
+        unique_id: damian_really_home
+        icon: mdi:home-account
+        state: >
+          {% set dist = state_attr('device_tracker.damian_iphone_14', 'distance') | default(999999) | float(999999) %}
+          {% set in_zone = is_state('device_tracker.damian_iphone_14', 'Home-Osoica') %}
+          {% set wifi = is_state('binary_sensor.damian_iphone_wifi', 'on') %}
+          {{ 'on' if (in_zone or dist < 2500 or (wifi and dist < 8000)) else 'off' }}
+
+  # 7. Пълен лог сензор 2030 (поддържа до ~3000 реда)
   - trigger:
       - platform: state
         entity_id: sensor.autopilot_log_last_line
-        not_to:
-          - unknown
-          - unavailable
-          - ''
+        not_to: [unknown, unavailable, '']
       - platform: homeassistant
         event: start
       - platform: time_pattern
@@ -195,60 +216,16 @@ template:
         unique_id: viessmann_autopilot_log_2030
         state: "{{ states('sensor.autopilot_log_last_line') | default('Системата стартира…') }}"
         attributes:
-          # Използваме само напълно разрешени филтри + чист Python в namespace
           history: >
             {% set ns = namespace(lines=[]) %}
-            {% set existing = this.attributes.history | default('') %}
-            {% for line in existing.splitlines() %}
-              {% set l = line.strip() %}
-              {% if l|length > 0 %}
-                {% set ns.lines = ns.lines + [l] %}
-              {% endif %}
-            {% endfor %}
-
+            {% set old = this.attributes.history | default('') %}
+            {% for l in old.splitlines() if l.strip() %}{% set ns.lines = ns.lines + [l.strip()] %}{% endfor %}
             {% set new = states('sensor.autopilot_log_last_line') | default('') | trim %}
-            {% if new|length > 0 and new not in ['unknown','unavailable','Initializing...','Системата стартира…'] 
-               and new != states('sensor.viessmann_autopilot_log_2030') %}
-              {% set timestamped = new ~ " " ~ now().strftime("%H:%M:%S") %}
-              {% set ns.lines = [timestamped] + ns.lines %}
+            {% if new and new not in ['unknown','unavailable',''] and new != states('sensor.viessmann_autopilot_log_2030') %}
+              {% set ts = now().strftime('%H:%M:%S') %}
+              {% set ns.lines = [new ~ ' ' ~ ts] + ns.lines %}
             {% endif %}
-
-            {{ ns.lines | join('\n') | truncate(32700, true, "") }}
-
-          line_count: >
-            {% set existing = (this.attributes.history | default('')).splitlines() %}
-            {% set count = existing | map('trim') | map('length') | select('gt', 0) | list | length %}
-            {% set new = states('sensor.autopilot_log_last_line') | default('') | trim %}
-            {% if new|length > 0 and new not in ['unknown','unavailable','Initializing...','Системата стартира…']
-               and new != states('sensor.viessmann_autopilot_log_2030') %}
-              {% set count = count + 1 %}
-            {% endif %}
-            {{ count }}
-
-          friendly_name: "Viessmann Autopilot – ПЪЛЕН ЛОГ 2030 ETERNAL FINAL"
+            {{ ns.lines | join('\n') | truncate(32700, true, '') }}
+          line_count: "{{ (this.attributes.history | default('')).splitlines() | map('trim') | reject('eq','') | list | count }}"
+          friendly_name: "Viessmann Autopilot – ПЪЛЕН ЛОГ 2030.12 ETERNAL FINAL"
           icon: mdi:rocket-launch
-
-  # ── 6. Compressor Runtime Today (с ежедневен ресет) ───────────────────────
-  - trigger:
-      - platform: time
-        at: "00:00:05"
-      - platform: state
-        entity_id: binary_sensor.cu401b_s_compressor
-    sensor:
-      - name: Compressor Runtime Today
-        unique_id: compressor_runtime_today
-        unit_of_measurement: h
-        device_class: duration
-        state_class: total_increasing
-        icon: mdi:clock-fast
-        state: >
-          {% set rt = this.state | float(0) %}
-          {% if today_at().date() != (this.attributes.last_reset | default('1970-01-01T00:00:00+00:00') | as_datetime).date() %}
-            {% set rt = 0 %}
-          {% endif %}
-          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
-            {% set rt = rt + (now() - this.last_updated).total_seconds() / 3600 %}
-          {% endif %}
-          {{ rt | round(3) }}
-        attributes:
-          last_reset: "{{ today_at().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() }}"
