@@ -216,3 +216,4 @@ template:
           line_count: "{{ (this.attributes.history | default('')).splitlines() | map('trim') | reject('eq','') | list | count }}"
           friendly_name: "Viessmann Autopilot – ПЪЛЕН ЛОГ 2030.12 ETERNAL FINAL"
           icon: mdi:rocket-launch
+    
