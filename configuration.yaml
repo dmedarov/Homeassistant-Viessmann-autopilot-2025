@@ -1,219 +1,146 @@
-# ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE СЕНЗОРИ – 2030.12 ETERNAL FINAL (100 % валидно за HA 2025.11+)
-# ══════════════════════════════════════════════════════════════════════════════
-template:
-  # 0. Критичен сензор за дата/час – никога повече замръзване на autopilot
-  - sensor:
-      - name: "Datetime"
-        unique_id: datetime
-        state: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
-        icon: mdi:clock-outline
-        attributes:
-          friendly_name: "Текуща дата и час"
-  # 1. Бързи сензори – актуализация на 30 секунди
-  - trigger:
-      - platform: time_pattern
-        seconds: /30
-    sensor:
-      # Външна температура (приоритет на Viessmann, fallback Netatmo)
-      - name: "Outdoor Temperature"
-        unique_id: outdoor_temperature
-        unit_of_measurement: °C
-        device_class: temperature
-        state_class: measurement
-        state: >
-          {% set v = states('sensor.cu401b_s_outside_temperature') | float(999) %}
-          {% if v|abs < 80 %}{{ v|round(1) }}
-          {% else %}{{ states('sensor.netatmo_outdoor_temperature') | float(5) | round(1) }}{% endif %}
-      # Средна вътрешна температура (теглени стаи)
-      - name: "Indoor Temperature Avg"
-        unique_id: indoor_temperature_avg
-        unit_of_measurement: °C
-        device_class: temperature
-        state_class: measurement
-        state: >
-          {% set rooms = ['sensor.downstairs_temperature','sensor.home_living_room_temperature',
-                          'sensor.bedroom_damian_temperature','sensor.bedroom_honey_temperature',
-                          'sensor.alex_room_temperature'] %}
-          {% set temps = rooms | map('states') | map('float', none) | reject('eq', none) | list %}
-          {{ (temps | sum / temps | count) | round(2) if temps else 21.0 }}
-      # Прогноза минимум 72 ч (с консервативен margin)
-      - name: "Forecast Min 72h"
-        unique_id: forecast_min_72h
-        unit_of_measurement: °C
-        device_class: temperature
-        state_class: measurement
-        state: >
-          {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f|length == 0 %}
-            {{ (states('sensor.cu401b_s_outside_temperature')|float(5)-2)|round(1) }}
-          {% else %}
-            {% set lows = f[:7] | map(attribute='templow') | map('float',99) | list %}
-            {% set m = lows|min %}
-            {% set margin = [0.4,0.7,1.0,1.3,1.6,2.0][([0,-5,-10,-15,-20,-99]|reject('gt',m)|list|count)-1] %}
-            {{ (m - margin)|round(1) }}
-          {% endif %}
-      # Прогноза минимум 96 ч
-      - name: "Forecast Min 96h"
-        unique_id: forecast_min_96h
-        unit_of_measurement: °C
-        state: >
-          {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f|length < 4 %}{{ states('sensor.forecast_min_72h')|float(5)|round(1) }}
-          {% else %}{{ (f[3:10]|map(attribute='templow')|map('float',99)|list|min)|round(1) }}{% endif %}
-      # Слънчев индекс 72 ч
-      - name: "Solar Forecast Score 72h"
-        unique_id: solar_forecast_score_72h
-        unit_of_measurement: "%"
-        state_class: measurement
-        state: >
-          {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
-          {% if f|length == 0 %}35{% else %}
-            {% set s = 0 %}
-            {% for day in f[:3] %}
-              {% set c = (day.condition|default('cloudy')|lower) %}
-              {% if c in ['sunny','fair','clearsky','clear'] %}{% set s = s + 100 %}
-              {% elif c == 'partlycloudy' %}{% set s = s + 60 %}
-              {% elif c in ['cloudy','overcast'] %}{% set s = s + 20 %}{% endif %}
-            {% endfor %}
-            {{ (s/3)|round(0)|int }}
-          {% endif %}
-  # 2. Защита на компресора (по текущ цикъл)
-  - trigger:
-      - platform: state
-        entity_id: binary_sensor.cu401b_s_compressor
-    sensor:
-      - name: "Compressor Runtime Protection"
-        unique_id: compressor_runtime_protection
-        state: >
-          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
-            {% set m = state_attr('binary_sensor.cu401b_s_compressor','runtime_minutes')|int(0) %}
-            {% if m > 45 %}very_long{% elif m > 35 %}long{% elif m > 25 %}medium{% else %}normal{% endif %}
-          {% else %}off{% endif %}
-        icon: >
-          {% set s = states('sensor.compressor_runtime_protection') %}
-          {% if s == 'very_long' %}mdi:alert-decagram
-          {% elif s == 'long' %}mdi:alert
-          {% elif s == 'medium' %}mdi:alert-outline
-          {% elif s == 'normal' %}mdi:engine
-          {% else %}mdi:engine-off{% endif %}
-  # 3. Дневна защита + текущ режим (всеки 5 мин + при промяна)
-  - trigger:
-      - platform: time_pattern
-        minutes: /5
-      - platform: state
-        entity_id: sensor.compressor_runtime_today
-    sensor:
-      - name: "Compressor Runtime Protection Daily"
-        unique_id: compressor_runtime_protection_daily
-        state: >
-          {% set h = states('sensor.compressor_runtime_today')|float(0) %}
-          {% if h > 20 %}very_long{% elif h > 17 %}long{% elif h > 14 %}medium{% else %}off{% endif %}
-      - name: "Heating Current Mode 2030"
-        unique_id: heating_current_mode_2030
-        state: >
-          {% set home = is_state('binary_sensor.damian_really_home','on') %}
-          {% set force = is_state('input_boolean.heating_preheat_48h_force','on') %}
-          {% set weekend = is_state('input_boolean.heating_weekend_mode_auto','on') and now().weekday() >= 5 %}
-          {% set holiday = is_state('calendar.blgarski_ofitsialni_praznitsi_2025_2030','on') %}
-          {{ 'Comfort' if home or force or weekend or holiday else 'Eco' }}
-        icon: >
-          {{ 'mdi:home-heart' if states('sensor.heating_current_mode_2030') == 'Comfort' else 'mdi:leaf' }}
-  # 4. Първоначални сензори с restore_state
-  - sensor:
-      - name: "PV Boost Smoothed"
-        unique_id: pv_boost_smoothed
-        unit_of_measurement: °C
-        state: "0.0"
-        icon: mdi:solar-power-variant
-      - name: "Heating PI Integral"
-        unique_id: heating_pi_integral
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "PI Integral Living"
-        unique_id: pi_integral_living
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "PI Integral Downstairs"
-        unique_id: pi_integral_downstairs
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "PI Integral Damian"
-        unique_id: pi_integral_damian
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "PI Integral Honey"
-        unique_id: pi_integral_honey
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "PI Integral Alex"
-        unique_id: pi_integral_alex
-        unit_of_measurement: °C·h
-        state: "0.0"
-      - name: "Long Comfort Counter"
-        unique_id: long_comfort_counter
-        state: "0.0"
-        unit_of_measurement: h
-  # 5. Компресор днес – точен брояч с ежедневен ресет (без drift)
-  - trigger:
-      - platform: time
-        at: "00:00:05"
-      - platform: state
-        entity_id: binary_sensor.cu401b_s_compressor
-    sensor:
-      - name: "Compressor Runtime Today"
-        unique_id: compressor_runtime_today
-        unit_of_measurement: h
-        device_class: duration
-        state_class: total
-        icon: mdi:timer-outline
-        state: >
-          {% set today = now().date() %}
-          {% set last_reset = (states.sensor.compressor_runtime_today.attributes.last_reset | default('1970-01-01')) | as_datetime(false) %}
-          {% set base = states('sensor.compressor_runtime_today') | float(0) if last_reset and last_reset.date() == today else 0.0 %}
-          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
-            {% set minutes = (now() - states.binary_sensor.cu401b_s_compressor.last_changed).total_seconds() / 60 %}
-            {{ (base + minutes/60) | round(3) }}
-          {% else %}
-            {{ base | round(3) }}
-          {% endif %}
-        attributes:
-          last_reset: "{{ today_at().replace(hour=0, minute=0, second=5).isoformat() }}"
-  # 6. Точен "Damian Really Home" (използван от autopilot)
-  - binary_sensor:
-      - name: "Damian Really Home"
-        unique_id: damian_really_home
-        icon: mdi:home-account
-        state: >
-          {% set dist = state_attr('device_tracker.damian_iphone_14', 'distance') | default(999999) | float(999999) %}
-          {% set in_zone = is_state('device_tracker.damian_iphone_14', 'Home-Osoica') %}
-          {% set wifi = is_state('binary_sensor.damian_iphone_wifi', 'on') %}
-          {{ 'on' if (in_zone or dist < 2500 or (wifi and dist < 8000)) else 'off' }}
-  # 7. Пълен лог сензор 2030 (поддържа до ~3000 реда)
-  - trigger:
-      - platform: state
-        entity_id: sensor.autopilot_log_last_line
-        not_to: [unknown, unavailable, '']
-      - platform: homeassistant
-        event: start
-      - platform: time_pattern
-        minutes: /10
-    sensor:
-      - name: "Viessmann Autopilot Log 2030"
-        unique_id: viessmann_autopilot_log_2030
-        state: "{{ states('sensor.autopilot_log_last_line') | default('Системата стартира…') }}"
-        attributes:
-          history: >
-            {% set ns = namespace(lines=[]) %}
-            {% set old = this.attributes.history | default('') %}
-            {% for l in old.splitlines() if l.strip() %}{% set ns.lines = ns.lines + [l.strip()] %}{% endfor %}
-            {% set new = states('sensor.autopilot_log_last_line') | default('') | trim %}
-            {% if new and new not in ['unknown','unavailable',''] and new != states('sensor.viessmann_autopilot_log_2030') %}
-              {% set ts = now().strftime('%H:%M:%S') %}
-              {% set ns.lines = [new ~ ' ' ~ ts] + ns.lines %}
-            {% endif %}
-            {{ ns.lines | join('\n') | truncate(32700, true, '') }}
-          line_count: "{{ (this.attributes.history | default('')).splitlines() | map('trim') | reject('eq','') | list | count }}"
-          friendly_name: "Viessmann Autopilot – ПЪЛЕН ЛОГ 2030.12 ETERNAL FINAL"
-          icon: mdi:rocket-launch
+# configuration_2031.01.yaml – VIESSMANN AUTOPILOT 2031.01 PERFECTION – ИЗЧИСТЕНА РАБОТЕЩА ВЕРСИЯ
+# 05.12.2025 → Всички грешки са отстранени – ГОТОВ ЗА ДИРЕКТНО КОПИРАНЕ
+
+default_config:
+frontend:
+  themes: !include_dir_merge_named themes
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+python_script:
+
+# Proxmox VE (по желание)
+proxmoxve:
+  - host: 192.168.0.33
+    username: root@pam
+    password: !secret proxmox_password
+    realm: pam
+    verify_ssl: false
+    nodes:
+      - node: pve
+        vms:
+          - 100
+          - 101
+
+# InfluxDB 1.x
+influxdb:
+  host: 192.168.0.35
+  port: 8086
+  ssl: false
+  verify_ssl: false
+  api_version: 1
+  username: homeassistant
+  password: !secret influxdb_password
+  database: homeassistant
+  max_retries: 3
+  default_measurement: state
+  measurement_attr: unit_of_measurement
+  tags:
+    source: HA
+  tags_attributes:
+    - friendly_name
+    - unit_of_measurement
+  ignore_attributes:
+    - icon
+    - source
+    - options
+    - editable
+    - step
+    - mode
+    - preset_modes
+    - supported_features
+    - effect_list
+    - attribution
+    - device_class
+    - state_class
+  exclude:
+    domains:
+      - automation
+      - scene
+      - script
+      - update
+      - camera
+      - light
+      - media_player
+      - fan
+  include:
+    entities: &influx_entities
+      - sensor.bedroom_damian_temperature
+      - sensor.bedroom_damian_humidity
+      - sensor.bedroom_honey_temperature
+      - sensor.bedroom_honey_humidity
+      - sensor.downstairs_temperature
+      - sensor.downstairs_humidity
+      - sensor.home_living_room_temperature
+      - sensor.home_living_room_humidity
+      - sensor.home_living_room_pressure
+      - sensor.home_living_room_noise
+      - sensor.home_living_room_co2
+      - sensor.alex_room_temperature
+      - sensor.garage_temperature
+      - sensor.garage_humidity
+      - sensor.garden_temperature
+      - sensor.house_avg_temperature
+      - sensor.house_min_temperature
+      - sensor.indoor_temperature_avg
+      - sensor.outdoor_temperature
+      - sensor.cu401b_s_outside_temperature
+      - sensor.cu401b_s_compressor_hours
+      - sensor.cu401b_s_compressor_starts
+      - sensor.cu401b_s_supply_temperature
+      - sensor.cu401b_s_return_temperature
+      - binary_sensor.cu401b_s_frost_protection
+      - binary_sensor.viessmann_compressor_running
+      - number.cu401b_s_heating_curve_slope
+      - number.cu401b_s_heating_curve_shift
+      - number.cu401b_s_normal_temperature
+      - number.cu401b_s_reduced_temperature
+      - input_number.heating_offset_dynamic
+      - input_number.comfort_target_temp
+      - input_number.sleep_target_temp
+      - input_number.heating_base_slope
+      - input_number.heating_cold_slope
+      - input_boolean.heating_preheat_48h_force
+      - input_boolean.heating_weekend_mode_auto
+      - sensor.heating_pi_integral
+      - sensor.pi_integral_living
+      - sensor.pi_integral_downstairs
+      - sensor.pi_integral_damian
+      - sensor.pi_integral_honey
+      - sensor.pi_integral_alex
+      - sensor.pv_boost_smoothed
+      - sensor.long_comfort_counter
+      - sensor.compressor_runtime_today
+      - sensor.compressor_runtime_protection
+      - sensor.forecast_min_72h
+      - sensor.forecast_min_96h
+      - sensor.solar_forecast_score_72h
+      - sensor.power_production_now
+      - sensor.energy_production_today_remaining
+      - sensor.heating_current_mode_2030
+      - sensor.viessmann_autopilot_log_2030
+      - device_tracker.damian_iphone_14
+      - calendar.blgarski_ofitsialni_praznitsi_2025_2030
+      - sensor.autopilot_persistent
+      - sensor.compressor_current_runtime
+      - sensor.compressor_daily_minutes
+      - sensor.compressor_season_minutes
+      - sensor.compressor_last_day
+      - sensor.current_hour
+      - sensor.current_minute
+      - sensor.current_day
+      - sensor.current_month
+      - sensor.current_year
+      - sensor.day_of_week
+      - sensor.gps_debug_info
+      - sensor.viessmann_system_limits
+      - sensor.overheating_severity_index
+      - sensor.temperature_imbalance
+      - sensor.shift_effectiveness
+      - sensor.supply_headroom
+
+# =====================================================
+# TEMPLATE СЕНЗОРИ – ПЪЛНА РАБОТЕЩА ВЕРСИЯ (2025.12+)
+# =====================================================
+template: !include template.yaml
     
