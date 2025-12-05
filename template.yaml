@@ -1,0 +1,360 @@
+  # 1. Времеви сензори
+  - sensor:
+      - name: "Current Hour"
+        unique_id: current_hour
+        state: "{{ now().hour }}"
+        icon: mdi:clock
+
+      - name: "Current Minute"
+        unique_id: current_minute
+        state: "{{ now().minute }}"
+        icon: mdi:clock-outline
+
+      - name: "Current Day"
+        unique_id: current_day
+        state: "{{ now().day }}"
+        icon: mdi:calendar-today
+
+      - name: "Current Month"
+        unique_id: current_month
+        state: "{{ now().month }}"
+        icon: mdi:calendar-month
+
+      - name: "Current Year"
+        unique_id: current_year
+        state: "{{ now().year }}"
+        icon: mdi:calendar
+
+      - name: "Day of Week"
+        unique_id: day_of_week
+        state: "{{ now().weekday() }}"
+        icon: mdi:calendar-week
+        attributes:
+          friendly_name: "Ден от седмицата (0=понеделник)"
+
+
+  # 2. Бързи сензори (на 30 секунди)
+  - trigger:
+      - platform: time_pattern
+        seconds: /30
+    sensor:
+      - name: "Outdoor Temperature"
+        unique_id: outdoor_temperature
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: >
+          {% set v = states('sensor.cu401b_s_outside_temperature') %}
+          {% if v not in ['unknown','unavailable',''] and v|float(default=999) != 999 %}
+            {{ v|float|round(1) }}
+          {% else %}
+            {{ states('sensor.netatmo_outdoor_temperature')|float(default=5.0)|round(1) }}
+          {% endif %}
+
+      - name: "Indoor Temperature Avg"
+        unique_id: indoor_temperature_avg
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: >
+          {% set rooms = ['sensor.downstairs_temperature','sensor.home_living_room_temperature',
+                          'sensor.bedroom_damian_temperature','sensor.bedroom_honey_temperature',
+                          'sensor.alex_room_temperature'] %}
+          {% set temps = rooms|map('states')|map('float',none)|reject('none')|list %}
+          {{ (temps|sum / temps|length)|round(2) if temps else 21.0 }}
+
+      - name: "Forecast Min 72h"
+        unique_id: forecast_min_72h
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: >
+          {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
+          {% if not f %}
+            {{ (states('sensor.outdoor_temperature')|float(5) - 2)|round(1) }}
+          {% else %}
+            {% set lows = f[:7]|map(attribute='templow')|map('float',99)|reject('eq',99)|list %}
+            {% if lows %}
+              {% set m = lows|min %}
+              {% set margin = [0.3,0.5,0.9,1.4,1.8,2.2,2.5]|select('le',30+m*-1)|list|last|default(2.5) %}
+              {{ (m - margin)|round(1) }}
+            {% else %}
+              {{ (states('sensor.outdoor_temperature')|float(5) - 2)|round(1) }}
+            {% endif %}
+          {% endif %}
+
+      - name: "Forecast Min 96h"
+        unique_id: forecast_min_96h
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: >
+          {% set f = state_attr('weather.forecast_home_osoica','forecast') or [] %}
+          {% set start = [3, f|length]|min %}
+          {% set lows = f[start:]|map(attribute='templow')|map('float',99)|reject('eq',99)|list %}
+          {{ (lows|min|default(states('sensor.forecast_min_72h')|float(5)))|round(1) }}
+
+      - name: "Solar Forecast Score 72h"
+        unique_id: solar_forecast_score_72h
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set f = state_attr('weather.forecast_home_osoica','forecast')[:3] %}
+          {% if not f %}35{% else %}
+            {% set s = 0 %}
+            {% for day in f %}
+              {% set c = day.condition|default('cloudy')|lower %}
+              {% if c in ['sunny','fair','clearsky','clear'] %}{% set s = s + 100 %}
+              {% elif c == 'partlycloudy' %}{% set s = s + 60 %}
+              {% elif c in ['cloudy','overcast'] %}{% set s = s + 20 %}{% endif %}
+            {% endfor %}
+            {{ (s/3)|round|int }}
+          {% endif %}
+
+
+  # 3–17. Всички останали сензори (без restore!)
+  - trigger:
+      - platform: state
+        entity_id: binary_sensor.cu401b_s_compressor
+    sensor:
+      - name: "Compressor Runtime Protection"
+        unique_id: compressor_runtime_protection
+        state: >
+          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
+            {% set m = state_attr('binary_sensor.cu401b_s_compressor','runtime_minutes')|int(0) %}
+            {{ 'very_long' if m > 45 else 'long' if m > 35 else 'medium' if m > 25 else 'normal' }}
+          {% else %}off{% endif %}
+        icon: >
+          {% set s = states('sensor.compressor_runtime_protection') %}
+          {{ {'very_long':'mdi:alert-decagram','long':'mdi:alert','medium':'mdi:alert-outline','normal':'mdi:engine','off':'mdi:engine-off'}[s] }}
+
+      - name: "Compressor Current Runtime"
+        unique_id: compressor_current_runtime
+        unit_of_measurement: "min"
+        device_class: duration
+        state: >
+          {% if is_state('binary_sensor.cu401b_s_compressor','on') %}
+            {{ ((now() - states.binary_sensor.cu401b_s_compressor.last_changed).total_seconds() / 60)|round(1) }}
+          {% else %}0.0{% endif %}
+        icon: mdi:timer
+
+      - name: "Compressor Runtime Protection Daily"
+        unique_id: compressor_runtime_protection_daily
+        state: >
+          {% set h = states('sensor.compressor_runtime_today') | float(0) %}
+          {{ 'very_long' if h > 20 else 'long' if h > 17 else 'medium' if h > 14 else 'off' }}
+        icon: >
+          {% set s = states('sensor.compressor_runtime_protection_daily') %}
+          {{ {'very_long':'mdi:alert-decagram','long':'mdi:alert','medium':'mdi:alert-outline','off':'mdi:engine-off'}[s] }}
+
+      - name: "Heating Current Mode 2030"
+        unique_id: heating_current_mode_2030
+        state: >
+          {% set home = is_state('binary_sensor.damian_really_home_fixed','on') %}
+          {% set force = is_state('input_boolean.heating_preheat_48h_force','on') %}
+          {% set weekend = is_state('input_boolean.heating_weekend_mode_auto','on') and now().weekday() >= 5 %}
+          {% set holiday = is_state('calendar.blgarski_ofitsialni_praznitsi_2025_2030','on') %}
+          {{ 'Comfort' if home or force or weekend or holiday else 'Eco' }}
+        icon: >
+          {{ 'mdi:home-heart' if states('sensor.heating_current_mode_2030') == 'Comfort' else 'mdi:leaf' }}
+
+  - sensor:
+      - name: "PV Boost Smoothed"
+        unique_id: pv_boost_smoothed
+        unit_of_measurement: "°C"
+        state: "0.0"
+        icon: mdi:solar-power-variant
+
+      - name: "Heating PI Integral"
+        unique_id: heating_pi_integral
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "PI Integral Living"
+        unique_id: pi_integral_living
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "PI Integral Downstairs"
+        unique_id: pi_integral_downstairs
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "PI Integral Damian"
+        unique_id: pi_integral_damian
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "PI Integral Honey"
+        unique_id: pi_integral_honey
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "PI Integral Alex"
+        unique_id: pi_integral_alex
+        unit_of_measurement: "°C·h"
+        state: "0.0"
+
+      - name: "Long Comfort Counter"
+        unique_id: long_comfort_counter
+        unit_of_measurement: "h"
+        state: "0.0"
+
+  - trigger:
+      - platform: time
+        at: "00:00:10"
+      - platform: state
+        entity_id: binary_sensor.cu401b_s_compressor
+    sensor:
+      - name: "Compressor Runtime Today"
+        unique_id: compressor_runtime_today
+        unit_of_measurement: "h"
+        device_class: duration
+        state_class: total_increasing
+        icon: mdi:timer-outline
+        state: >
+          {% set today = today_at().date() %}
+          {% set stored = this.state | float(0) if this else 0 %}
+          {% set last_date = this.attributes.last_date | default(none) %}
+          {% set base = stored if last_date == today else 0.0 %}
+          {% if is_state('binary_sensor.cu401b_s_compressor', 'on') %}
+            {% set mins = (now() - state_attr('binary_sensor.cu401b_s_compressor', 'last_changed') ).total_seconds() / 60 %}
+            {{ (base + mins/60) | round(3) }}
+          {% else %}
+            {{ base | round(3) }}
+          {% endif %}
+        attributes:
+          last_date: "{{ today }}"
+
+  - trigger:
+      - platform: state
+        entity_id: device_tracker.damian_iphone_14
+      - platform: time_pattern
+        minutes: "/1"
+    binary_sensor:
+      - name: "Damian Really Home FIXED"
+        unique_id: damian_really_home_fixed
+        icon: mdi:home-account
+        state: >
+          {% set dist = state_attr('device_tracker.damian_iphone_14','distance')|default(999999)|float(999999) %}
+          {{ 'on' if states('device_tracker.damian_iphone_14') == 'home' or dist < 200 else 'off' }}
+        attributes:
+          distance_m: "{{ dist|round(1) }}"
+          last_updated: "{{ now() }}"
+
+  - trigger:
+      - platform: state
+        entity_id: sensor.autopilot_log_last_line
+        not_to: [unknown, unavailable, '']
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: /10
+    sensor:
+      - name: "Viessmann Autopilot Log 2030"
+        unique_id: viessmann_autopilot_log_2030
+        state: "{{ states('sensor.autopilot_log_last_line')|default('Системата стартира…') }}"
+        attributes:
+          history: >
+            {% set ns = namespace(lines=[]) %}
+            {% set old = this.attributes.history|default('') %}
+            {% for l in old.splitlines() if l.strip() %}{% set ns.lines = ns.lines + [l] %}{% endfor %}
+            {% set new = states('sensor.autopilot_log_last_line')|default('')|trim %}
+            {% if new and new not in ['unknown','un','unavailable',''] and new != states('sensor.viessmann_autopilot_log_2030') %}
+              {% set ns.lines = [new ~ "  " ~ now().strftime('%H:%M:%S')] + ns.lines %}
+            {% endif %}
+            {{ ns.lines[:250]|join('\n') }}
+          line_count: "{{ (this.attributes.history|default('')).splitlines()|reject('eq','')|list|count }}"
+          friendly_name: "Viessmann Autopilot – ПЪЛЕН ЛОГ 2031.01 PERFECTION"
+          icon: mdi:rocket-launch
+
+  - sensor:
+      - name: "Autopilot Persistent"
+        unique_id: autopilot_persistent
+        state: "0.0"
+        attributes:
+          last_slope: 0.96
+          last_shift: 0.0
+          last_run: "2025-11-30 00:00:00"
+          friendly_name: "Autopilot persistent 2031.01"
+
+      - name: "Compressor Last Day"
+        unique_id: compressor_last_day
+        state: "{{ now().date().isoformat() }}"
+
+      - name: "Viessmann System Limits"
+        unique_id: viessmann_system_limits
+        state: >
+          {% set supply = states('sensor.cu401b_s_supply_temperature')|float(0) %}
+          {% set outdoor = states('sensor.outdoor_temperature')|float(0) %}
+          {% set shift = states('number.cu401b_s_heating_curve_shift')|float(0) %}
+          {% set slope = states('number.cu401b_s_heating_curve_slope')|float(0.96) %}
+          {% if supply > 0 and outdoor != 0 %}
+            {% set calc = slope * (20 - outdoor) + shift %}
+            {% set diff = supply - calc %}
+            {{ 'very_high_limit' if diff > 20 else 'high_limit' if diff > 15 else 'medium_limit' if diff > 10 else 'low_limit' if diff > 5 else 'within_range' }}
+          {% else %}within_range{% endif %}
+        icon: >
+          {% set s = states('sensor.viessmann_system_limits') %}
+          {{ {'very_high_limit':'mdi:alert-circle','high_limit':'mdi:alert','medium_limit':'mdi:information','low_limit':'mdi:check-circle','within_range':'mdi:check'}[s] }}
+        attributes:
+          supply_vs_calculated_diff: >
+            {% set calc = states('number.cu401b_s_heating_curve_slope')|float(0.96)*(20-states('sensor.outdoor_temperature')|float)+states('number.cu401b_s_heating_curve_shift')|float %}
+            {{ (states('sensor.cu401b_s_supply_temperature')|float - calc)|round(1) }}
+
+      - name: "Overheating Severity Index"
+        unique_id: overheating_severity_index
+        state: >
+          {% set mode = states('sensor.heating_current_mode_2030') %}
+          {% set indoor = states('sensor.indoor_temperature_avg')|float(21) %}
+          {% set target = states('input_number.comfort_target_temp')|float(22.2) if mode == 'Comfort' else states('input_number.sleep_target_temp')|float(17.8) %}
+          {% set err = indoor - target %}
+          {{ 'critical' if err > 2 else 'severe' if err > 1.5 else 'high' if err > 1 else 'moderate' if err > 0.5 else 'low' if err > 0.2 else 'none' }}
+        icon: >
+          {% set s = states('sensor.overheating_severity_index') %}
+          {{ {'critical':'mdi:fire','severe':'mdi:fire-alert','high':'mdi:thermometer-high','moderate':'mdi:thermometer','low':'mdi:thermometer-low','none':'mdi:thermometer-check'}[s] }}
+
+      - name: "Temperature Imbalance"
+        unique_id: temperature_imbalance
+        unit_of_measurement: "°C"
+        state: >
+          {% set mode = states('sensor.heating_current_mode_2030') %}
+          {% set target = states('input_number.comfort_target_temp')|float(22.2) if mode == 'Comfort' else states('input_number.eco_target_temp')|float(20.7) %}
+          {{ (states('sensor.indoor_temperature_avg')|float(21) - target)|round(2) }}
+        attributes:
+          status: >
+            {% set imb = states('sensor.temperature_imbalance')|float(0) %}
+            {{ 'critical_overheat' if imb > 1.5 else 'significant_overheat' if imb > 1 else 'slight_overheat' if imb > 0.5 else 'critical_cold' if imb < -1.5 else 'significant_cold' if imb < -1 else 'slight_cold' if imb < -0.5 else 'balanced' }}
+
+      - name: "Shift Effectiveness"
+        unique_id: shift_effectiveness
+        state: >
+          {% set shift = states('number.cu401b_s_heating_curve_shift')|float(0) %}
+          {% set indoor = states('sensor.indoor_temperature_avg')|float(21) %}
+          {% set target = states('input_number.comfort_target_temp')|float(22.2) if states('sensor.heating_current_mode_2030') == 'Comfort' else 19.5 %}
+          {{ 'effective_heating' if shift > 0 and indoor < target else 'effective_cooling' if shift < 0 and indoor > target else 'overheating' if shift > 0 and indoor > target else 'overcooling' if shift < 0 and indoor < target else 'neutral' }}
+        icon: >
+          {% set s = states('sensor.shift_effectiveness') %}
+          {{ {'effective_heating':'mdi:arrow-up-bold-circle','effective_cooling':'mdi:arrow-down-bold-circle','overheating':'mdi:alert-circle','overcooling':'mdi:snowflake-alert','neutral':'mdi:check-circle'}[s] }}
+
+      - name: "Supply Temperature Headroom"
+        unique_id: supply_headroom
+        unit_of_measurement: "°C"
+        state: >
+          {% set supply = states('sensor.cu401b_s_supply_temperature')|float(0) %}
+          {% set max_supply = 58 if states('sensor.outdoor_temperature')|float < -10 else 62 %}
+          {{ (max_supply - supply)|max(0)|round(1) }}
+        icon: >
+          {% set h = states('sensor.supply_headroom')|float(99) %}
+          {{ 'mdi:alert' if h < 3 else 'mdi:alert-outline' if h < 6 else 'mdi:check-circle' }}
+        attributes:
+          status: >
+            {% set h = states('sensor.supply_headroom')|float(99) %}
+            {{ 'critical' if h < 3 else 'low' if h < 6 else 'medium' if h < 10 else 'good' if h < 15 else 'excellent' }}
+
+      - name: "GPS Debug Info"
+        unique_id: gps_debug_info
+        state: >
+          {% set tr = states('device_tracker.damian_iphone_14')|default('unknown') %}
+          {% set dist = state_attr('device_tracker.damian_iphone_14','distance')|default('N/A') %}
+          {{ "State: " ~ tr ~ " | Dist: " ~ dist ~ "m" }}
