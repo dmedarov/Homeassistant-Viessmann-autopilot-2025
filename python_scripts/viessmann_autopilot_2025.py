@@ -1,9 +1,10 @@
 # /config/python_scripts/viessmann_autopilot.py
-# VIESSMANN AUTOPILOT 2041.02 • RADIATOR 57.9°C RELIGION • CLOUD PERFECTION EDITION
+# VIESSMANN AUTOPILOT 2042.01 • RADIATOR 57.9°C RELIGION • CLOUD PERFECTION EDITION • ANTI-WINDUP UPGRADE
 # 140 m² • радиатори • никога над 57.9°C • перфектен лог завинаги • 96–98 % самоконсумация дори в облачно
+# Нови в 2042.01: Back-calculation anti-windup (Kb=Ki главен, Kb=0.022 зони), интеграл reset при COMFORT, slope max 1.25
 
 logger.info("═" * 140)
-logger.info("VIESSMANN AUTOPILOT 2041.02 • RADIATOR 57.9°C RELIGION • CLOUD PERFECTION • ЗАПУСНАТ")
+logger.info("VIESSMANN AUTOPILOT 2042.01 • RADIATOR 57.9°C RELIGION • CLOUD PERFECTION • ANTI-WINDUP • ЗАПУСНАТ")
 logger.info("═" * 140)
 
 FAIL_ENTITY = 'sensor.autopilot_consecutive_failures'
@@ -34,26 +35,21 @@ try:
         return float(default)
 
     # ──────────────────────────────────────── ОСНОВНИ ДАННИ ────────────────────────────────────────
-    hour        = int(get_number('sensor.current_hour', 13))
-    minute      = int(get_number('sensor.current_minute', 0))
-    day         = int(get_number('sensor.current_day', 5))
-    month       = int(get_number('sensor.current_month', 12))
-    weekday     = int(get_number('sensor.day_of_week', 0))
-
-    outdoor     = safe_temp('sensor.outdoor_temperature', 3.0, ['sensor.cu401b_s_outside_temperature'])
-    indoor      = safe_temp('sensor.indoor_temperature_avg', 21.0)
+    hour = int(get_number('sensor.current_hour', 13))
+    minute = int(get_number('sensor.current_minute', 0))
+    day = int(get_number('sensor.current_day', 5))
+    month = int(get_number('sensor.current_month', 12))
+    weekday = int(get_number('sensor.day_of_week', 0))
+    outdoor = safe_temp('sensor.outdoor_temperature', 3.0, ['sensor.cu401b_s_outside_temperature'])
+    indoor = safe_temp('sensor.indoor_temperature_avg', 21.0)
     supply_temp = safe_temp('sensor.cu401b_s_secondary_circuit_supply_temperature', 45.0)
-
-    tmin_72h    = safe_temp('sensor.forecast_min_72h', outdoor - 3)
-    tmin_96h    = safe_temp('sensor.forecast_min_96h', tmin_72h - 1)
-
-    home        = (hass.states.get('binary_sensor.damian_really_home_fixed') == 'on' or
-                   hass.states.get('device_tracker.damian_iphone_14') == 'home')
-
+    tmin_72h = safe_temp('sensor.forecast_min_72h', outdoor - 3)
+    tmin_96h = safe_temp('sensor.forecast_min_96h', tmin_72h - 1)
+    home = (hass.states.get('binary_sensor.damian_really_home_fixed') == 'on' or
+            hass.states.get('device_tracker.damian_iphone_14') == 'home')
     manual_force = get_number('input_boolean.heating_preheat_48h_force', 0) > 0
     auto_weekend = get_number('input_boolean.heating_weekend_mode_auto', 0) > 0
-    is_holiday  = get_number('calendar.blgarski_ofitsialni_praznitsi_2025_2030', 0) > 0
-
+    is_holiday = get_number('calendar.blgarski_ofitsialni_praznitsi_2025_2030', 0) > 0
     night_tariff = hour >= 22 or hour < 8
     compressor_on = get_number('binary_sensor.cu401b_s_compressor', 0) > 0
     current_runtime = get_number('sensor.compressor_current_runtime', 0.0)
@@ -83,10 +79,17 @@ try:
         sleep_temp = get_number('input_number.sleep_target_temp', 17.8)
         target = min(target, max(sleep_temp + 0.3, 17.8))
 
-    # ──────────────────────────────────────── ПЕРСИСТЕНТНИ ДАННИ ────────────────────────────────────────
+    # ──────────────────────────────────────── ПЕРСИСТЕНТНИ ДАННИ И ПРЕДИШЕН COMFORT СТАТУС ────────────────────────────────────────
     persistent = hass.states.get('sensor.autopilot_persistent')
     last_slope = float(persistent.attributes.get('last_slope', 1.04)) if persistent else 1.04
     last_shift = float(persistent.attributes.get('last_shift', 0.0)) if persistent else 0.0
+    prev_is_comfort = bool(persistent.attributes.get('prev_is_comfort', False)) if persistent else False
+
+    # Ресет на всички интеграли при преход AWAY → COMFORT (setpoint change)
+    if is_comfort and not prev_is_comfort:
+        for e in ['sensor.heating_pi_integral','sensor.pi_integral_living','sensor.pi_integral_downstairs',
+                  'sensor.pi_integral_damian','sensor.pi_integral_honey','sensor.pi_integral_alex']:
+            hass.states.set(e, 0.0, {'unit_of_measurement': '°C·h'})
 
     # ──────────────────────────────────────── НУЛИРАНЕ НА ИНТЕГРАЛИ СЛЕД 3 ЧАСА ИЗКЛЮЧЕН КОМПРЕСОР ────────────────────────────────────────
     if get_number('sensor.compressor_off_time_minutes', 0) > 180:
@@ -94,71 +97,96 @@ try:
                   'sensor.pi_integral_damian','sensor.pi_integral_honey','sensor.pi_integral_alex']:
             hass.states.set(e, 0.0, {'unit_of_measurement': '°C·h'})
 
-    # ──────────────────────────────────────── ЗОНИ И PI КОНТРОЛ ────────────────────────────────────────
+    # ──────────────────────────────────────── ЗОНИ И PI КОНТРОЛ С ANTI-WINDUP ────────────────────────────────────────
     zones = {
-        'living_room':   {'sensor': 'sensor.home_living_room_temperature',   'integral': 'sensor.pi_integral_living'},
-        'downstairs':    {'sensor': 'sensor.downstairs_temperature',        'integral': 'sensor.pi_integral_downstairs'},
-        'bedroom_damian':{'sensor': 'sensor.bedroom_damian_temperature',    'integral': 'sensor.pi_integral_damian'},
-        'bedroom_honey': {'sensor': 'sensor.bedroom_honey_temperature',     'integral': 'sensor.pi_integral_honey'},
-        'alex_room':     {'sensor': 'sensor.alex_room_temperature',         'integral': 'sensor.pi_integral_alex'},
+        'living_room': {'sensor': 'sensor.home_living_room_temperature', 'integral': 'sensor.pi_integral_living'},
+        'downstairs': {'sensor': 'sensor.downstairs_temperature', 'integral': 'sensor.pi_integral_downstairs'},
+        'bedroom_damian':{'sensor': 'sensor.bedroom_damian_temperature', 'integral': 'sensor.pi_integral_damian'},
+        'bedroom_honey': {'sensor': 'sensor.bedroom_honey_temperature', 'integral': 'sensor.pi_integral_honey'},
+        'alex_room': {'sensor': 'sensor.alex_room_temperature', 'integral': 'sensor.pi_integral_alex'},
     }
     room_weights = {'living_room': 1.35, 'downstairs': 1.30, 'bedroom_honey': 1.1, 'bedroom_damian': 1.0, 'alex_room': 0.7}
     zone_shift = 0.0
     INTERVAL_HOURS = 0.333
+    Kb_zone = 0.022  # Back-calculation gain за зони
 
     for name, z in zones.items():
         temp = safe_temp(z['sensor'], 21.0)
         t_zone = 21.0 + (0.6 if is_comfort else -1.0)
         if (long_preheat or preheat) and name in ['living_room', 'downstairs']: t_zone += 0.6
         error = t_zone - temp
-        integral = get_number(z['integral'], 0.0) + error * INTERVAL_HOURS
-        integral = max(min(integral, 7.0), -7.0)
-        weight = 1.35 if (long_preheat or preheat) and name in ['living_room', 'downstairs'] else 1.0
-        this_shift = round((3.3 * max(error, 0) * room_weights.get(name, 1.0) + 0.022 * integral) * weight, 2)
-        if this_shift > zone_shift: zone_shift = this_shift
-        hass.states.set(z['integral'], round(integral, 3), {'unit_of_measurement': '°C·h'})
+        integral_prev = get_number(z['integral'], 0.0)
+        integral = integral_prev + error * INTERVAL_HOURS
 
+        # Пропорционално-интегрален принос за тази зона
+        this_p = 3.3 * max(error, 0) * room_weights.get(name, 1.0)
+        this_i = 0.022 * integral
+        this_shift_raw = round(this_p + this_i, 2)
+
+        weight = 1.35 if (long_preheat or preheat) and name in ['living_room', 'downstairs'] else 1.0
+        this_shift = this_shift_raw * weight
+
+        if this_shift > zone_shift: zone_shift = this_shift
+
+        # Back-calculation anti-windup (само за зоните – лимит ±7 °C·h)
+        integral = max(min(integral, 7.0), -7.0)
+        # Ако има saturation на зонов принос – unwind
+        if this_shift_raw != (this_p + 0.022 * integral):  # груба детекция на saturation
+            unwind = Kb_zone * (this_shift_raw - (this_p + 0.022 * integral))
+            integral += unwind * INTERVAL_HOURS
+
+        integral = round(max(min(integral, 7.0), -7.0), 3)
+        hass.states.set(z['integral'], integral, {'unit_of_measurement': '°C·h'})
+
+    # Главен PI с anti-windup
     error_main = target - indoor
-    integral_main = get_number('sensor.heating_pi_integral', 0.0) + error_main * INTERVAL_HOURS
+    integral_main_prev = get_number('sensor.heating_pi_integral', 0.0)
+    integral_main = integral_main_prev + error_main * INTERVAL_HOURS
+
+    pi_shift_raw = round(4.1 * error_main + 0.028 * integral_main, 2)
+
+    # Лимит на интеграла ±9 °C·h
     integral_main = max(min(integral_main, 9.0), -9.0)
+
+    # Back-calculation anti-windup за главен (Kb = Ki = 0.028)
+    if abs(pi_shift_raw - (4.1 * error_main + 0.028 * integral_main)) > 0.01:
+        unwind = 0.028 * (pi_shift_raw - (4.1 * error_main + 0.028 * integral_main))
+        integral_main += unwind * INTERVAL_HOURS
+        integral_main = max(min(integral_main, 9.0), -9.0)
+
     pi_shift = round(4.1 * error_main + 0.028 * integral_main, 2)
     hass.states.set('sensor.heating_pi_integral', round(integral_main, 3), {'unit_of_measurement': '°C·h'})
 
-    # ──────────────────────────────────────── PV BOOST 2041.02 CLOUD PERFECTION ────────────────────────────────────────
+    # ──────────────────────────────────────── PV BOOST 2042.01 CLOUD PERFECTION ────────────────────────────────────────
     prev_pv_boost = get_number('sensor.pv_boost_smoothed', 0.0)
     pv_now = get_number('sensor.power_production_now', 0.0)
     pv_rem = get_number('sensor.energy_production_today_remaining', 0.0)
-    cloud_score = get_number('sensor.cloud_cover_score', 50)          # 0 = ясно, 100 = апокалипсис
-
+    cloud_score = get_number('sensor.cloud_cover_score', 50)  # 0 = ясно, 100 = апокалипсис
     raw_pv_boost = 0.0
-
     if 7 <= hour <= 18 and outdoor > -10 and pv_now > 0.3:
-        if cloud_score >= 65:                                      # CLOUD MODE
+        if cloud_score >= 65:  # CLOUD MODE
             mult = 2.15 if night_tariff else 2.05
             extra = min(pv_rem * 0.55, 5.2) if hour < 14 and pv_rem > 5.5 and pv_now > 2.5 else 0.0
-            sunset_buffer = 0.0                                    # НЕ намаляваме преди залез
+            sunset_buffer = 0.0
             smoothing = 0.42 if pv_rem > 3 else 0.28
         else:
             mult = 1.95 if night_tariff else 1.82
             extra = min(pv_rem * 0.44, 4.6) if hour < 14 and pv_rem > 5.5 and pv_now > 2.5 else 0.0
             sunset_buffer = -min(pv_now * 1.1, 3.8) if hour >= 14 and pv_rem < 4.2 else 0.0
             smoothing = 0.36 if (pv_rem + pv_now/12) >= 6 else 0.22
-
         raw_pv_boost = pv_now * mult + extra + sunset_buffer
         raw_pv_boost = max(0.0, min(raw_pv_boost, 11.8))
-
         pv_boost = prev_pv_boost + smoothing * (raw_pv_boost - prev_pv_boost)
         pv_boost = round(max(0.0, min(pv_boost, 11.8)), 1)
     else:
         pv_boost = 0.0
 
     # Свещеният твърд кап – 57.9 °C религията е над всичко
-    headroom = max(0.0, 57.9 - supply_temp - 0.32)      # по-агресивен в облачно време
+    headroom = max(0.0, 57.9 - supply_temp - 0.32)
     pv_boost = min(pv_boost, headroom)
-
     hass.states.set('sensor.pv_boost_smoothed', pv_boost, {
         'icon': 'mdi:solar-power-variant',
-        'friendly_name': 'PV Boost 2041.02 CLOUD PERFECTION'
+        'friendly_name': 'PV Boost 2042.01 CLOUD PERFECTION'
     })
 
     # ──────────────────────────────────────── ФИНАЛЕН SHIFT И SLOPE ────────────────────────────────────────
@@ -187,7 +215,7 @@ try:
 
     base_slope = get_number('number.cu401b_s_heating_curve_slope', 1.04)
     slope = base_slope + max(0, (10 - outdoor))*0.018 + max(0, (-tmin_72h - outdoor))*0.026
-    slope = round(max(min(slope, 1.30), 0.80), 3)
+    slope = round(max(min(slope, 1.25), 0.80), 3)  # Намален максимум на 1.25
 
     if abs(slope - last_slope) > 0.012:
         hass.services.call('number', 'set_value', {'entity_id': 'number.cu401b_s_heating_curve_slope', 'value': slope})
@@ -197,7 +225,8 @@ try:
     hass.states.set('sensor.autopilot_persistent', 0.0, {
         'last_slope': slope,
         'last_shift': final_shift,
-        'friendly_name': 'Autopilot 2041.02 CLOUD PERFECTION'
+        'prev_is_comfort': is_comfort,
+        'friendly_name': 'Autopilot 2042.01 ANTI-WINDUP UPGRADE'
     })
 
     mode_str = "HOME" if home else "AWAY"
@@ -209,7 +238,7 @@ try:
     logger.info(log_line)
 
     hass.states.set(FAIL_ENTITY, 0)
-    logger.info("AUTOPILOT 2041.02 • РАБОТИ КАТО БОГ")
+    logger.info("AUTOPILOT 2042.01 • РАБОТИ КАТО БОГ • ANTI-WINDUP ACTIVE")
     logger.info("═" * 140)
 
 except Exception as e:
@@ -219,4 +248,4 @@ except Exception as e:
     if fail_count >= 4:
         hass.services.call('number', 'set_value', {'entity_id': 'number.cu401b_s_heating_curve_slope', 'value': 1.00})
         hass.services.call('number', 'set_value', {'entity_id': 'number.cu401b_s_heating_curve_shift', 'value': 0.0})
-        hass.services.call('notify', 'mobile_app_damian_iphone', {'message': 'АВТОПИЛОТ 2041.02 → SAFE MODE'})
+        hass.services.call('notify', 'mobile_app_damian_iphone', {'message': 'АВТОПИЛОТ 2042.01 → SAFE MODE'})
